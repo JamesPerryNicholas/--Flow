@@ -1,0 +1,9 @@
+#tool-credentials-dialog{width:min(880px,94vw);max-height:90dvh;padding:0;border-radius:16px;overflow:auto}
+#credentials-list{display:flex;flex-direction:column;gap:8px;max-height:450px;overflow:auto}
+.credential-form-title{font-size:16px;font-weight:550;margin:0 0 24px}
+#credential-feedback:not(:empty){font-size:11px;line-height:1.8;padding:10px 12px;background:#eff8f2;color:#609573;border-radius:6px;margin-top:15px;overflow-wrap:anywhere}
+#credential-feedback.error{background:#fff1f1;color:#b16a74}
+#credentials-loading{font-size:12px;color:#9393a9;padding:25px 0;line-height:1.9}
+.http-method{font-size:10px;font-weight:600;color:#579eaa;letter-spacing:.5px}
+.http-note{font-size:10px;line-height:1.8;color:#9098a5;margin:8px 0 20px}
+@media(max-width:450px){#credentials-list{max-height:120px}}
