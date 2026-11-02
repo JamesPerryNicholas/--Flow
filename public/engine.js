@@ -1,5 +1,6 @@
 (function (root) {
   'use strict';
+  const Schema = typeof module === 'object' && module.exports ? require('./json-schema.js') : root.FlowSchema;
   const types = {
     start: { name: '开始', description: '工作流的起点，接收输入', icon: 'play', color: '#65a593', bg: '#eaf5ef', category: '基础节点' },
     end: { name: '结束', description: '输出工作流的最终结果', icon: 'stop', color: '#d27e8c', bg: '#fbedf0', category: '基础节点' },
@@ -40,6 +41,10 @@
       const config = {};
       for (const key of ['model', 'modelId', 'prompt', 'template', 'inputTemplate', 'variable', 'content', 'keyword', 'method', 'url', 'bodyTemplate', 'credentialId', 'timeoutMs', 'responsePath', 'outputType', 'workflowId', 'maxItems', 'resultType', 'sourceMode', 'knowledgeId', 'topK']) {
         if (typeof n.config?.[key] === 'string') config[key] = n.config[key].slice(0, 50000);
+      }
+      if (n.config?.outputSchema !== undefined) {
+        if (typeof n.config.outputSchema !== 'string' || n.config.outputSchema.length > 50000) throw Error('JSON 字段规则必须是最多 50000 个字符的文本');
+        config.outputSchema = n.config.outputSchema;
       }
       if (n.config?.outputType !== undefined && !['text', 'json'].includes(n.config.outputType)) throw Error('节点输出类型必须是 text 或 json');
       if (n.type === 'batch') { batchConfig(config); config.outputType = 'json'; }
@@ -267,6 +272,7 @@
   // Validate every reachable child and both condition paths before any side effect.
   function checkExecution(flow, live = false, options = {}) {
     const workflows = options.workflows || [];
+    const outputValidators = new Map();
     // Completed subtrees are acyclic. Cache by depth as well as object so a
     // shared workflow is still checked against every remaining depth budget.
     const checked = new Map();
@@ -276,6 +282,11 @@
       const plan = checkSingle(current, live);
       for (const n of plan.reachable) {
         try {
+          if (n.config.outputSchema !== undefined && (typeof n.config.outputSchema !== 'string' || n.config.outputSchema.length > 50000)) throw Error('JSON 字段规则必须是最多 50000 个字符的文本');
+          if ((n.config.outputType === 'json' || n.type === 'batch') && n.config.outputSchema?.trim() && !outputValidators.has(n)) {
+            try { outputValidators.set(n, Schema.compile(n.config.outputSchema)); }
+            catch (error) { error.message = '「' + n.name + '」JSON 字段规则：' + error.message; throw error; }
+          }
           if (n.type === 'knowledge') {
             knowledgeConfig(n.config);
             if (n.config.sourceMode === 'library') {
@@ -310,7 +321,7 @@
       checked.get(current).set(depth, plan);
       return plan;
     }
-    return visit(flow, [flow], 0);
+    return { ...visit(flow, [flow], 0), outputValidators };
   }
   function* executionSteps(flow, input, live, options, budget, iteration) {
     const start = flow.nodes.find(n => n.type === 'start');
@@ -382,8 +393,11 @@
       }
       if (node.type === 'condition') branch = output.includes(config.keyword) ? 'yes' : 'no';
       if (output.length > 100000) throw Error('输出内容过长，请减少模板或输入长度');
-      if (config.outputType === 'json') {
-        try { JSON.parse(output); } catch { throw Error('「' + node.name + '」声明 JSON 输出，但结果不是有效 JSON'); }
+      if (config.outputType === 'json' || node.type === 'batch') {
+        let data;
+        try { data = JSON.parse(output); } catch { throw Error('「' + node.name + '」声明 JSON 输出，但结果不是有效 JSON'); }
+        try { options.outputValidators.get(node)?.(data); }
+        catch (error) { error.message = '「' + node.name + '」JSON 字段校验失败：' + error.message; throw error; }
       }
       outputs.set(node.id, output);
       logs.push({ id: node.id, name: node.name, type: node.type, input: nodeInput, prompt, modelId: config.modelId || '', output, outputType: node.type === 'batch' ? 'json' : config.outputType || 'text', branch, ...(node.type === 'knowledge' && config.sourceMode === 'library' ? { knowledgeId: config.knowledgeId, knowledgeName: response.knowledgeName, sources: response.hits } : {}), ...(node.type === 'http' ? { request: requestText, httpStatus: response.status || 0, contentType: response.contentType || '' } : {}), ...(node.type === 'condition' ? { decision: `包含「${config.keyword}」：${branch === 'yes' ? '是' : '否'}` } : {}) });
@@ -396,8 +410,8 @@
     throw Error('流程未到达结束节点');
   }
   function executionPlan(flow, input, options = {}) {
-    checkExecution(flow, false, options);
-    const steps = executionSteps(flow, input, false, { ...options, workflows: options.workflows || [] }, { steps: 0 });
+    const { outputValidators } = checkExecution(flow, false, options);
+    const steps = executionSteps(flow, input, false, { ...options, outputValidators, workflows: options.workflows || [] }, { steps: 0 });
     let state = steps.next();
     while (!state.done) {
       const step = state.value;
@@ -411,8 +425,8 @@
     const abort = () => { if (options.signal?.aborted) { const error = Error('运行已取消'); error.name = 'AbortError'; throw error; } };
     abort();
     const live = !!(options.invokeModel || options.invokeHttp);
-    checkExecution(flow, live, { ...options, requireInvokers: true });
-    const steps = executionSteps(flow, input, live, { ...options, workflows: options.workflows || [] }, { steps: 0 });
+    const { outputValidators } = checkExecution(flow, live, { ...options, requireInvokers: true });
+    const steps = executionSteps(flow, input, live, { ...options, outputValidators, workflows: options.workflows || [] }, { steps: 0 });
     let state = steps.next();
     while (!state.done) {
       const step = state.value;
@@ -425,7 +439,7 @@
           else await options.onNodeStart?.(step.node, { input: step.input, prompt: step.prompt, request: step.request });
         }
         if (step.kind === 'model') {
-          result = await options.invokeModel(step.node, step.input, options.signal, { prompt: step.prompt });
+          result = await options.invokeModel(step.node, step.input, options.signal, { prompt: step.prompt, ...(step.iteration ? { iteration: step.iteration } : {}) });
           if (typeof result !== 'string') throw Error('模型未返回文本结果');
         }
         if (step.kind === 'knowledge') {

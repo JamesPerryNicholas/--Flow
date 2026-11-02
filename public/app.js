@@ -119,6 +119,19 @@
   function field(label, key, value, textarea = false, description = '', references = false) {
     return `<label class="field"><span>${label}${key === 'prompt' ? '<small>角色设定</small>' : ''}</span>${textarea ? `<textarea data-config="${key}" maxlength="50000">${esc(value)}</textarea>` : `<input data-config="${key}" value="${esc(value)}" maxlength="${key === 'name' ? 100 : 1000}">`}${description ? `<div class="field-description">${description}</div>` : ''}</label>${references ? `<label class="variable-picker"><span>＋ 引用变量</span><select data-insert-variable="${key}" aria-label="向${label}插入变量"><option value="">选择上游变量…</option>${E.getVariables(flow(),selected).map(v=>`<option value="${esc(v.token)}" title="${esc(v.description)}">${esc(v.label)}${v.type==='json'?' · JSON':''}</option>`).join('')}</select></label><button type="button" class="structured-picker-button" data-open-variable="${key}">选择 JSON 字段…</button>` : ''}`;
   }
+  function renderSchemaStatus() {
+    const status = $('schema-status'), input = $('inspector').querySelector('[data-config="outputSchema"]');
+    if (!status || !input) return;
+    let message = '未启用字段规则，仅检查 JSON 格式。', invalid = false;
+    if (input.value.trim()) {
+      try { FlowSchema.compile(input.value); message = '规则有效，执行时将检查实际数据。'; }
+      catch (error) { message = error.message; invalid = true; }
+    }
+    status.textContent = message;
+    status.classList.toggle('run-model-error', invalid);
+    input.setAttribute('aria-invalid', String(invalid));
+    input.setAttribute('aria-describedby', 'schema-status');
+  }
   function renderInspector() {
     if (runMode) { renderRun(); return; }
     const n = node();
@@ -159,7 +172,11 @@
       content += field('最大处理项数','maxItems',c.maxItems??'100',false,'1–100；超出上限在执行单项流程前报错。');
       content += `<label class="field"><span>汇总结果类型</span><select data-config="resultType" aria-label="汇总结果类型"><option value="text" ${c.resultType!=='json'?'selected':''}>字符串数组 · 保留单项输出文本</option><option value="json" ${c.resultType==='json'?'selected':''}>JSON 数组 · 解析每项输出</option></select><div class="field-description">输出固定为 JSON 数组；JSON 模式要求每项最终输出是有效 JSON。失败或停止后不再执行后续项。</div></label>`;
     } else content += `<label class="field"><span>${n.type==='start'?'输入类型':'输出类型'}</span><select data-config="outputType" aria-label="${n.type==='start'?'输入类型':'输出类型'}"><option value="text" ${c.outputType!=='json'?'selected':''}>文本 String</option><option value="json" ${c.outputType==='json'?'selected':''}>JSON · 对象、数组或基础值</option></select><div class="field-description">${n.type==='start'?'选择 JSON 后，试运行输入必须是有效 JSON。':'选择 JSON 后会校验实际输出；格式无效时停止，不执行后续节点。模型需通过提示词约定 JSON 格式。'}</div></label>`;
+    if (c.outputType === 'json' || n.type === 'batch') {
+      content += field('JSON 字段规则（可选）','outputSchema',c.outputSchema || '',true,'填写 JSON Schema。支持 type、properties、required、additionalProperties、items、enum、const 和数值/长度/数量上下限；不支持的关键字会报错。留空仅检查 JSON 格式。') + '<p id="schema-status" class="field-description" role="status"></p><button class="model-manage-link" id="schema-example">填入对象规则示例</button><p class="field-description">切回文本后暂停字段校验并保留规则。规则草稿可保存；运行和发布前检查所有可达分支。</p>';
+    }
     $('inspector').innerHTML = `<div class="inspector-heading">节点配置<button class="icon-button" id="close-inspector" title="取消选择" aria-label="取消选择">${icon('close')}</button></div><div class="inspector-content"><div class="inspector-node-title">${typeIcon(n.type)}<div><b>${E.types[n.type].name}</b><small>${E.types[n.type].description}</small></div></div>${content}<hr class="section-divider"><details class="available-variables"><summary class="section-label">${icon('workflow')} ${n.type==='start'?'输出变量':'可引用变量 · '+E.getVariables(flow(),n.id).length}</summary>${n.type==='start'?`<div class="variable-row"><span class="variable-chip">${c.outputType==='json'?'json':'str'}</span><code>start.input</code><span>${c.outputType==='json'?'JSON':'String'}</span></div>`:E.getVariables(flow(),n.id).map(v=>`<div class="available-variable"><b>${esc(v.label)} <span class="variable-value-type">${v.type==='json'?'JSON':'String'}</span></b><code>${esc(v.token)}</code></div>`).join('')}</details><div class="inspector-note">${n.type === 'agent' || n.type === 'llm' ? '✦ 同一个模型可供多个工作流使用。每个智能体和大模型节点可独立选择模型。' : '连接节点后，上游输出会自动作为当前节点的输入。'}</div><div class="inspector-actions"><button class="button" id="duplicate-node">${icon('copy')}复制节点</button><button class="button danger" id="delete-node">${icon('trash')}删除节点</button></div></div>`;
+    renderSchemaStatus();
   }
   function render() { $('workflow-name').value = flow().name; const parent=parentNavigation.at(-1),back=$('return-parent');back.hidden=!parent;back.textContent=parent?'← 返回 '+(flows.find(f=>f.id===parent.flowId)?.name||'父流程'):'';renderNodes(); renderInspector(); renderFlows(); updateHistory(); }
   function openFlow(id,nodeId=null) { save();cancelRun();activeId=id;resetSelection();selected=nodeId;render();persist(); }
@@ -235,9 +252,18 @@
     const key=e.target.dataset.config,n=node();if(!key||!n||e.target.tagName==='SELECT')return;
     if(e.target.dataset.recorded!=='yes'){snapshot();e.target.dataset.recorded='yes';}
     if(key==='name')n.name=e.target.value;else n.config[key]=e.target.value;
+    if(key==='outputSchema')renderSchemaStatus();
     renderNodes();persist();
   });
   $('inspector').addEventListener('focusout',e=>{if(e.target.dataset.config)delete e.target.dataset.recorded;});
+  $('inspector').addEventListener('click',e=>{
+    if(!e.target.closest('#schema-example'))return;
+    const input=$('inspector').querySelector('[data-config="outputSchema"]');
+    if(!input)return;
+    if(input.value.trim())return toast('请先清空已有规则，再填入示例');
+    input.value=JSON.stringify({type:'object',properties:{title:{type:'string',minLength:1},tags:{type:'array',items:{type:'string'}}},required:['title'],additionalProperties:false},null,2);
+    input.dispatchEvent(new Event('input',{bubbles:true}));input.focus();
+  });
   $('inspector').addEventListener('change',e=>{
     if(e.target.dataset.insertVariable&&e.target.value){const target=$('inspector').querySelector(`[data-config="${e.target.dataset.insertVariable}"]`);if(target){target.setRangeText(e.target.value,target.selectionStart,target.selectionEnd,'end');target.dispatchEvent(new Event('input',{bubbles:true}));target.focus();}e.target.value='';}
     if(['modelId','credentialId','method','outputType','workflowId','resultType','sourceMode','knowledgeId'].includes(e.target.dataset.config)&&node()){const key=e.target.dataset.config; snapshot();node().config[key]=e.target.value;renderNodes();if(['method','outputType','workflowId','sourceMode'].includes(key))renderInspector();persist();}
