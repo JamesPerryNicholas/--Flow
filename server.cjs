@@ -9,6 +9,7 @@ const { createKnowledgeStore } = require('./lib/knowledge-store.cjs');
 const { createPublishedStore } = require('./lib/published-store.cjs');
 const { createPublishedRunner } = require('./lib/published-runner.cjs');
 const { createConversationStore } = require('./lib/conversation-store.cjs');
+const { createAgentRuntime, runAgent } = require('./lib/agent-runner.cjs');
 const types = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.svg': 'image/svg+xml' };
 
 function json(res, status, data) {
@@ -40,12 +41,14 @@ function checkRequest(req) {
 }
 
 function createApp({ store, storeOptions, toolCredentialStore, toolCredentialStoreOptions, knowledgeStore, knowledgeStoreOptions, publishedStore, publishedStoreOptions, conversationStore, conversationStoreOptions, runTimeoutMs, httpFetchImpl, publicRoot = path.join(__dirname, 'public'), timeoutMs, fetchImpl } = {}) {
-  // Delay DPAPI access until a model API is used, keeping static pages available on storage failure.
+  // Keep static pages available even when local encrypted storage is unavailable.
   const getStore = () => store ||= createModelStore(storeOptions);
   const getToolStore = () => toolCredentialStore ||= createToolCredentialStore(toolCredentialStoreOptions);
   const getKnowledgeStore = () => knowledgeStore ||= createKnowledgeStore(knowledgeStoreOptions);
   const getPublishedStore = () => publishedStore ||= createPublishedStore(publishedStoreOptions);
   const getConversationStore = () => conversationStore ||= createConversationStore(conversationStoreOptions);
+  const agentRuntime = createAgentRuntime({ getToolStore, getKnowledgeStore, httpFetchImpl });
+  let activeAgents = 0;
   const runner = createPublishedRunner({ getStore, getToolStore, getKnowledgeStore, getConversationStore, fetchImpl, httpFetchImpl, timeoutMs, runTimeoutMs });
   const root = path.resolve(publicRoot);
   return async (req, res) => {
@@ -137,6 +140,14 @@ function createApp({ store, storeOptions, toolCredentialStore, toolCredentialSto
           if (!testing && req.method === 'PUT') return json(res, 200, { model: getStore().save(await readJson(req), id) });
           if (!testing && req.method === 'DELETE') { getStore().remove(id); return json(res, 200, { ok: true }); }
         }
+        if (pathname === '/api/agent' && req.method === 'POST') {
+          const body = await readJson(req);
+          if (activeAgents >= 3) throw new AppError(429, '同时最多运行 3 个智能体请求。');
+          activeAgents++;
+          try {
+            return json(res, 200, await runAgent(getStore().get(body.modelId), { prompt: body.prompt, input: body.input, tools: body.tools, maxToolRounds: body.maxToolRounds, signal: controller.signal, timeoutMs, fetchImpl, runtime: agentRuntime }));
+          } finally { activeAgents--; }
+        }
         if (pathname === '/api/chat' && req.method === 'POST') {
           const body = await readJson(req);
           const model = getStore().get(body.modelId);
@@ -156,7 +167,7 @@ function createApp({ store, storeOptions, toolCredentialStore, toolCredentialSto
       try { data = await fs.promises.readFile(file); } catch { throw new AppError(404, '文件不存在。'); }
       res.writeHead(200, { 'Content-Type': types[path.extname(file)] || 'application/octet-stream', 'X-Content-Type-Options': 'nosniff' });
       res.end(req.method === 'HEAD' ? undefined : data);
-    } catch (error) { json(res, error instanceof AppError ? error.status : 500, { error: error instanceof AppError ? error.message : '服务器处理失败，请稍后重试。' }); }
+    } catch (error) { json(res, error instanceof AppError ? error.status : 500, { error: error instanceof AppError ? error.message : '服务器处理失败，请稍后重试。', ...(error instanceof AppError && error.agentSteps ? { agentSteps: error.agentSteps } : {}) }); }
     finally { req.removeListener('aborted', abort); res.removeListener('close', abort); }
   };
 }

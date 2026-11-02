@@ -16,6 +16,7 @@
     return { id: uid(), type, name: types[type].name, x, y, config: {
       ...(!['start', 'end'].includes(type) ? { inputTemplate: '{{input}}' } : {}),
       ...(type === 'agent' || type === 'llm' ? { modelId: '', prompt: type === 'agent' ? '你是一位专业的内容创作助手。请根据用户的需求，提供清晰、有创意的内容建议。' : '请理解用户的输入，并给出清晰、准确的回答。', template: '创作建议：{{input}}\n\n这是本地模板模拟结果。' } : {}),
+      ...(type === 'agent' ? { toolNodeIds: '[]', maxToolRounds: '4' } : {}),
       ...(type === 'start' ? { variable: 'input' } : {}),
       ...(type === 'end' ? { template: '{{input}}' } : {}),
       ...(type === 'knowledge' ? { sourceMode: 'library', knowledgeId: '', topK: '3', content: '' } : {}),
@@ -38,8 +39,11 @@
     const nodes = value.nodes.map(n => {
       if (!n || !Object.hasOwn(types, n.type) || typeof n.id !== 'string' || !n.id || n.id.length > 100 || ids.has(n.id) || !Number.isFinite(n.x) || !Number.isFinite(n.y) || Math.abs(n.x) > 1e6 || Math.abs(n.y) > 1e6 || typeof n.name !== 'string' || n.name.length > 100) throw Error('节点信息无效或 ID 重复');
       ids.add(n.id);
+      if (n.type === 'agent') for (const key of ['toolNodeIds', 'maxToolRounds']) {
+        if (n.config?.[key] !== undefined && typeof n.config[key] !== 'string') throw Error('智能体工具配置必须为文本');
+      }
       const config = {};
-      for (const key of ['model', 'modelId', 'prompt', 'template', 'inputTemplate', 'variable', 'content', 'keyword', 'method', 'url', 'bodyTemplate', 'credentialId', 'timeoutMs', 'responsePath', 'outputType', 'workflowId', 'maxItems', 'resultType', 'sourceMode', 'knowledgeId', 'topK']) {
+      for (const key of ['model', 'modelId', 'prompt', 'template', 'inputTemplate', 'variable', 'content', 'keyword', 'method', 'url', 'bodyTemplate', 'credentialId', 'timeoutMs', 'responsePath', 'outputType', 'workflowId', 'maxItems', 'resultType', 'sourceMode', 'knowledgeId', 'topK', 'toolNodeIds', 'maxToolRounds']) {
         if (typeof n.config?.[key] === 'string') config[key] = n.config[key].slice(0, 50000);
       }
       if (n.config?.outputSchema !== undefined) {
@@ -49,6 +53,7 @@
       if (n.config?.outputType !== undefined && !['text', 'json'].includes(n.config.outputType)) throw Error('节点输出类型必须是 text 或 json');
       if (n.type === 'batch') { batchConfig(config); config.outputType = 'json'; }
       if (n.type === 'knowledge') knowledgeConfig(config);
+      if (n.type === 'agent') agentConfig(config);
       return { id: n.id, type: n.type, name: n.name, x: n.x, y: n.y, config };
     });
     const edgeIds = new Set();
@@ -253,6 +258,32 @@
     if (!Number.isInteger(topK) || topK < 1 || topK > 10) throw Error('检索片段数必须为 1 到 10 的整数');
     return topK;
   }
+  function agentConfig(config) {
+    let ids;
+    try { ids = JSON.parse(config.toolNodeIds || '[]'); } catch { throw Error('智能体工具选择格式无效'); }
+    if (!Array.isArray(ids) || ids.length > 8 || ids.some(id => typeof id !== 'string' || !id || id.length > 100) || new Set(ids).size !== ids.length) throw Error('每个智能体最多选择 8 个工具，且不能重复');
+    const rounds = Number(config.maxToolRounds ?? 4);
+    if (!Number.isInteger(rounds) || rounds < 1 || rounds > 10) throw Error('智能体工具轮数必须为 1 到 10 的整数');
+    return { ids, rounds };
+  }
+  function agentTools(flow, node) {
+    return agentConfig(node.config).ids.map(id => {
+      const tool = flow.nodes.find(n => n.id === id);
+      if (!tool || !['knowledge', 'http'].includes(tool.type)) throw Error('智能体引用的工具不存在或类型不支持');
+      if (tool.type === 'http' && (tool.config.method || 'GET') !== 'GET') throw Error('智能体 HTTP 工具首版只支持 GET 只读请求');
+      if (tool.type === 'knowledge' && tool.config.sourceMode !== 'library') throw Error('智能体知识工具需要选择统一文档库');
+      return tool;
+    });
+  }
+  function agentToolFlow(tool) {
+    const start = makeNode('start', 0, 0), end = makeNode('end', 0, 0);
+    // The tool receives the model's query as its own raw input. Parent node
+    // references are deliberately unavailable; the synthetic flow prechecks them.
+    return { id: uid(), name: '智能体工具', nodes: [start, tool, end], edges: [
+      { id: uid(), from: start.id, to: tool.id, branch: 'yes' },
+      { id: uid(), from: tool.id, to: end.id, branch: 'yes' }
+    ] };
+  }
   function batchConfig(config) {
     const max = config.maxItems === undefined || config.maxItems === '' ? 100 : Number(config.maxItems);
     if (!Number.isInteger(max) || max < 1 || max > 100) throw Error('批处理数量上限必须为 1 到 100 的整数');
@@ -295,8 +326,19 @@
               options.validateKnowledge?.(n);
             }
           }
+          if (n.type === 'agent') {
+            agentConfig(n.config);
+            if (live) {
+              const tools = agentTools(current, n);
+              if (tools.length && !options.invokeAgent && options.requireInvokers) throw Error('真实运行缺少智能体工具调用器');
+              for (const tool of tools) {
+                try { visit(agentToolFlow(tool), ancestors, depth); }
+                catch (error) { error.nodeId = n.id; error.message = '智能体工具「' + tool.name + '」：' + error.message; throw error; }
+              }
+            }
+          }
           if (live && ['agent', 'llm'].includes(n.type)) {
-            if (!options.invokeModel && options.requireInvokers) throw Error('真实运行缺少模型调用器');
+            if (!options.invokeModel && options.requireInvokers && !(n.type === 'agent' && agentConfig(n.config).ids.length && options.invokeAgent)) throw Error('真实运行缺少模型调用器');
             options.validateModel?.(n);
           }
           if (live && n.type === 'http') {
@@ -329,6 +371,7 @@
     let current = start, output = input;
     while (current) {
       const node = current, config = node.config;
+      let agentSteps;
       try {
       if (++budget.steps > 2000) throw Error('本次运行超过 2000 个节点步骤上限');
       if (visited.has(current.id)) throw Error('检测到循环连接');
@@ -344,7 +387,10 @@
       const requestText = request ? request.method + ' ' + request.url + (request.body ? '\n\n' + request.body : '') : '';
       yield { kind: 'before', node, input: nodeInput, prompt, request: requestText, iteration };
       let branch = 'yes';
-      if (node.type === 'agent' || node.type === 'llm') output = live ? yield { kind: 'model', node, input: nodeInput, prompt, iteration } : resolve(config.template || '{{input}}', values);
+      if (live && node.type === 'agent' && agentConfig(config).ids.length) {
+        const result = yield { kind: 'agent', node, input: nodeInput, prompt, tools: agentTools(flow, node), iteration };
+        output = result.output; agentSteps = result.steps;
+      } else if (node.type === 'agent' || node.type === 'llm') output = live ? yield { kind: 'model', node, input: nodeInput, prompt, iteration } : resolve(config.template || '{{input}}', values);
       if (node.type === 'http') {
         response = live ? yield { kind: 'http', node, request, iteration } : { output: resolve(config.template || '', values) };
         output = extractResponse(response.output, config.responsePath || '');
@@ -400,12 +446,12 @@
         catch (error) { error.message = '「' + node.name + '」JSON 字段校验失败：' + error.message; throw error; }
       }
       outputs.set(node.id, output);
-      logs.push({ id: node.id, name: node.name, type: node.type, input: nodeInput, prompt, modelId: config.modelId || '', output, outputType: node.type === 'batch' ? 'json' : config.outputType || 'text', branch, ...(node.type === 'knowledge' && config.sourceMode === 'library' ? { knowledgeId: config.knowledgeId, knowledgeName: response.knowledgeName, sources: response.hits } : {}), ...(node.type === 'http' ? { request: requestText, httpStatus: response.status || 0, contentType: response.contentType || '' } : {}), ...(node.type === 'condition' ? { decision: `包含「${config.keyword}」：${branch === 'yes' ? '是' : '否'}` } : {}) });
+      logs.push({ id: node.id, name: node.name, type: node.type, input: nodeInput, prompt, modelId: config.modelId || '', output, outputType: node.type === 'batch' ? 'json' : config.outputType || 'text', branch, ...(agentSteps ? { agentSteps } : {}), ...(node.type === 'knowledge' && config.sourceMode === 'library' ? { knowledgeId: config.knowledgeId, knowledgeName: response.knowledgeName, sources: response.hits } : {}), ...(node.type === 'http' ? { request: requestText, httpStatus: response.status || 0, contentType: response.contentType || '' } : {}), ...(node.type === 'condition' ? { decision: `包含「${config.keyword}」：${branch === 'yes' ? '是' : '否'}` } : {}) });
       yield { kind: 'after', node, log: logs[logs.length - 1], iteration };
-      if (node.type === 'end') return { logs, output, skipped: flow.nodes.length - visited.size };
+      if (node.type === 'end') { const executed = new Set([...visited, ...logs.flatMap(log => (log.agentSteps || []).filter(s => s.status === 'success').map(s => s.toolNodeId))]); return { logs, output, skipped: flow.nodes.filter(n => !executed.has(n.id)).length }; }
       const next = flow.edges.find(e => e.from === node.id && e.branch === branch);
       current = flow.nodes.find(n => n.id === next.to);
-      } catch (error) { if (!error.nodeId) error.nodeId = node.id; throw error; }
+      } catch (error) { if (agentSteps) error.agentSteps = agentSteps; if (!error.nodeId) error.nodeId = node.id; throw error; }
     }
     throw Error('流程未到达结束节点');
   }
@@ -424,7 +470,7 @@
   async function runFlow(flow, input, options = {}) {
     const abort = () => { if (options.signal?.aborted) { const error = Error('运行已取消'); error.name = 'AbortError'; throw error; } };
     abort();
-    const live = !!(options.invokeModel || options.invokeHttp);
+    const live = !!(options.invokeModel || options.invokeHttp || options.invokeAgent);
     const { outputValidators } = checkExecution(flow, live, { ...options, requireInvokers: true });
     const steps = executionSteps(flow, input, live, { ...options, outputValidators, workflows: options.workflows || [] }, { steps: 0 });
     let state = steps.next();
@@ -441,6 +487,10 @@
         if (step.kind === 'model') {
           result = await options.invokeModel(step.node, step.input, options.signal, { prompt: step.prompt, ...(step.iteration ? { iteration: step.iteration } : {}) });
           if (typeof result !== 'string') throw Error('模型未返回文本结果');
+        }
+        if (step.kind === 'agent') {
+          result = await options.invokeAgent(step.node, step.input, options.signal, { prompt: step.prompt, tools: step.tools, ...(step.iteration ? { iteration: step.iteration } : {}) });
+          if (!result || typeof result.output !== 'string' || !Array.isArray(result.steps) || result.steps.length > 20) throw Error('智能体未返回有效结果');
         }
         if (step.kind === 'knowledge') {
           result = await options.invokeKnowledge(step.node, step.input, options.signal);
@@ -460,7 +510,7 @@
     }
     return state.value;
   }
-  const api = { types, uid, makeNode, sample, validateFlow, connectionError, executionPlan, checkExecution, runFlow, getVariables, interpolate, extractResponse, parseReference };
+  const api = { types, uid, makeNode, sample, validateFlow, connectionError, executionPlan, checkExecution, runFlow, getVariables, interpolate, extractResponse, parseReference, agentConfig, agentTools, agentToolFlow };
   if (typeof module !== 'undefined') module.exports = api;
   else root.FlowEngine = api;
 })(globalThis);

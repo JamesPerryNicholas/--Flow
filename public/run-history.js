@@ -23,7 +23,14 @@
     if (Number.isInteger(value.iterationTotal) && value.iterationTotal >= 1 && value.iterationTotal <= 100) log.iterationTotal=value.iterationTotal;
     if (Array.isArray(value.iterationPath) && value.iterationPath.length <= 5 && value.iterationPath.every(i=>Number.isInteger(i)&&i>=0&&i<100)) log.iterationPath=[...value.iterationPath];
     if (Array.isArray(value.sources)) log.sources=value.sources.slice(0,10).filter(h=>h&&typeof h.documentId==='string'&&typeof h.documentName==='string'&&typeof h.chunkId==='string'&&Number.isInteger(h.chunkIndex)&&h.chunkIndex>=0&&Number.isFinite(h.score)).map(h=>({documentId:clip(h.documentId,200),documentName:clip(h.documentName,200),chunkId:clip(h.chunkId,200),chunkIndex:h.chunkIndex,score:h.score,text:typeof h.text==='string'?clip(h.text,1200):''}));
+    if (Array.isArray(value.agentSteps)) log.agentSteps = value.agentSteps.slice(0,20).filter(step=>step && ['knowledge','http'].includes(step.type) && Number.isInteger(step.round) && step.round>=1 && step.round<=10 && ['success','error','cancelled'].includes(step.status)).map(step=>({
+      name:clip(String(step.name || ''),100),toolNodeId:clip(String(step.toolNodeId || ''),100),type:step.type,round:step.round,status:step.status,
+      query:typeof step.query==='string'?clip(step.query,2000):'',output:typeof step.output==='string'?clip(step.output,1200):'',error:typeof step.error==='string'?clip(step.error,1200):'',elapsedMs:finite(step.elapsedMs)?step.elapsedMs:0
+    }));
     return log;
+  }
+  function formatAgentSteps(steps) {
+    return steps.map((step,i)=>`${i+1}. ${step.name} · 第 ${step.round} 轮 · ${{success:'成功',error:'失败',cancelled:'取消'}[step.status] || step.status} · ${Math.round(step.elapsedMs || 0)}ms\n查询：${step.query || ''}\n${step.error ? '错误：'+step.error : '结果：'+(step.output || '')}`).join('\n\n');
   }
   function createStore(storage, onError) {
     let records = [], blocked = false;
@@ -132,6 +139,7 @@
         const node = el('details', 'history-node'); node.open = log.status === 'error' || log.status === 'cancelled'; node.append(el('summary', '', (log.name || log.id || '节点') + ' · ' + duration(log.elapsedMs) + (log.status ? ' · ' + (labels[log.status] || log.status) : '')));
         if(log.batchNodeId)node.append(el('p','history-meta',(log.workflowName||'单项流程')+' · 第 '+(log.iterationPath?.length?log.iterationPath.map(i=>i+1).join(' / '):String((log.iterationIndex||0)+1))+' 项'+(log.iterationTotal?' · 本层共 '+log.iterationTotal+' 项':'')));
         if(log.sources){block(node,'检索文档库',log.knowledgeName);block(node,'检索来源',log.sources.length?log.sources.map((h,i)=>`[${i+1}] ${h.documentName} · 片段 ${h.chunkIndex+1} · 相关分 ${h.score.toFixed(3)}\n${h.text}`).join('\n\n'):'未匹配到片段');}
+        if(log.agentSteps?.length)block(node,'自主工具调用',formatAgentSteps(log.agentSteps));
         block(node, '输入', log.input); if (log.prompt) block(node, '提示词', log.prompt); if(log.request)block(node,'HTTP 请求',log.request); if(log.httpStatus)block(node,'HTTP 状态',String(log.httpStatus));if(log.contentType)block(node,'响应类型',log.contentType); block(node, log.outputType==='json'?'输出 · JSON':'输出', log.output); block(node, '错误', log.error); block(node, '判断结果', log.decision); if (log.type === 'condition' && log.branch) block(node, '执行分支', log.branch === 'yes' ? '是' : '否'); detail.append(node);
       }
       block(detail, '最终输出', r.output); block(detail, '运行错误', r.error);
@@ -143,6 +151,6 @@
     const unsubscribe = store.subscribe(() => { if (dialog.open) render(); });
     return { open() { if (onOpen) onOpen(); selected = null; render(); if (!dialog.open) dialog.showModal(); }, destroy() { unsubscribe(); dialog.remove(); } };
   }
-  return { createStore, mount };
+  return { createStore, mount, formatAgentSteps };
 });
 

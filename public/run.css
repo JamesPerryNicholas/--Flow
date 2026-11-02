@@ -3,3 +3,15 @@
 @media(max-width:580px){.runner-header{height:64px;padding:0 20px}.runner-layout{display:block;padding:0 18px;margin:25px auto}.runner-intro{margin-bottom:25px}.runner-intro h1{margin:10px 0}.runner-lead,.runner-line,.runner-facts,.runner-intro>.runner-note{display:none}.runner-intro label{max-width:100%}.runner-workspace form,.runner-result{padding:18px}.runner-footer{padding:10px 20px 22px;gap:15px}}
 .runner-conversations{border:1px solid #e9e4dc;border-radius:15px;background:#fff;padding:18px 24px;margin-bottom:20px}.conversation-heading,.conversation-selector{display:flex;align-items:center;gap:12px}.conversation-heading{justify-content:space-between}.conversation-heading label{font-size:13px;color:#6c6278}.conversation-selector{margin-top:8px;flex-wrap:wrap}.conversation-selector label{font-size:11px;color:#8e8596}.conversation-selector select{flex:1;min-width:160px;max-width:100%;padding:8px;border:1px solid #eae5ef;border-radius:6px;color:#71687b;background:#fff;font-size:11px}#app-dialogue{max-height:380px;overflow:auto;overscroll-behavior:contain}.conversation-message{margin:12px 0;padding:12px 14px;border-radius:9px;background:#faf9fc}.conversation-user{background:#f3effb;margin-left:24px}.conversation-assistant{margin-right:24px}.conversation-message b{font-size:10px;font-weight:500;color:#8c74b4}.conversation-message pre{font:12px/1.9 Inter,"Microsoft YaHei",sans-serif;white-space:pre-wrap;overflow-wrap:anywhere;color:#71687b;max-height:260px;overflow:auto;margin:7px 0 0}
 @media(prefers-reduced-motion:reduce){*{scroll-behavior:auto!important}}
+
+.agent-tool-list { display: grid; gap: 8px; margin: 12px 0 18px; }
+.agent-tool-option { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border: 1px solid #e8e4ef; border-radius: 10px; cursor: pointer; }
+.agent-tool-option:has(input:checked) { background: #f5f0fc; border-color: #aa92d3; }
+.agent-tool-option input { accent-color: #8b72cf; flex: 0 0 auto; }
+.agent-tool-option span { display: grid; gap: 3px; min-width: 0; overflow-wrap: anywhere; }
+.agent-tool-option b { font-size: 12px; font-weight: 500; }
+.agent-tool-option small { font-size: 11px; color: #8b8796; }
+.agent-tools-chip { margin-top: 8px; color: #8b72cf; font-size: 10px; }
+.agent-tool-edge { pointer-events: none; }
+.agent-tool-edge path { fill: none; stroke: #b7a5d8; stroke-width: 1.4; stroke-dasharray: 5 5; }
+.agent-tool-edge text { fill: #9f8dbb; font-size: 10px; text-anchor: middle; }

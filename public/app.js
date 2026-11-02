@@ -78,6 +78,7 @@
       let body = '';
       if (n.type === 'start') body = `<p>工作流从这里开始</p><div class="node-field"><span>输入</span><span class="variable-chip"><em>${c.outputType==='json'?'json':'str'}</em>${esc(c.variable || 'input')}</span></div>`;
       if (n.type === 'agent' || n.type === 'llm') { const m=models.find(m=>m.id===c.modelId); body = `<p>${esc(c.prompt || '点击设置角色与提示词')}</p><div class="node-field"><span class="model-chip">✦ ${esc(m?.name || (c.modelId ? '模型不可用' : '请选择模型'))}</span><span class="variable-chip">${m ? (m.enabled ? '已接入' : '已停用') : '待配置'}</span></div>`; }
+      if (n.type === 'agent') { let count = 0; try { count = E.agentConfig({toolNodeIds:c.toolNodeIds}).ids.length; } catch {} if (count) body += `<div class="agent-tools-chip">${count} 个自主工具 · 最多 ${esc(c.maxToolRounds || '4')} 轮</div>`; }
       if (n.type === 'knowledge') { const library=knowledgeLibraries.find(k=>k.id===c.knowledgeId);body=c.sourceMode==='library'?`<p>${esc(library?.name || '选择文档库')}</p><div class="node-field"><span>${library?library.documentCount+' 篇文档':'统一知识库'}</span><span class="variable-chip">Top ${esc(c.topK || '3')}</span></div>`:`<p>${esc(c.content || '点击添加知识内容')}</p><div class="node-field"><span>内联知识</span><span class="variable-chip">${(c.content || '').split('\n').filter(Boolean).length} 条</span></div>`; }
       if (n.type === 'http') body = `<p>${esc(c.url || '点击配置接口地址')}</p><div class="node-field"><span class="http-method">${esc(c.method || 'GET')}</span><span class="variable-chip">${c.credentialId ? esc(credentials.find(v=>v.id===c.credentialId)?.name || '凭据不可用') : '无需认证'}</span></div>`;
       if (n.type === 'batch') body = `<p>${esc(flows.find(f=>f.id===c.workflowId)?.name || '选择单项处理流程')}</p><div class="node-field"><span>逐项执行 · 上限 ${esc(c.maxItems || '100')}</span><span class="variable-chip">JSON 数组</span></div>`;
@@ -96,6 +97,13 @@
       const p = portPos(a,true,e.branch), q = portPos(b,false), d = curve(p,q);
       return `<g class="edge-group" data-edge="${esc(e.id)}"><title>点击删除连接</title><path class="edge-hit" d="${d}"/><path class="edge-path" d="${d}"/>${a.type === 'condition' ? `<text class="edge-label" x="${p.x+18}" y="${p.y-8}">${e.branch === 'yes' ? '是' : '否'}</text>` : ''}</g>`;
     }).join('');
+    for (const agent of flow().nodes.filter(n=>n.type==='agent')) {
+      let tools = []; try { tools = E.agentTools(flow(),agent); } catch { continue; }
+      for (const tool of tools) {
+        const a={x:agent.x+120,y:agent.y+160},b={x:tool.x+120,y:tool.y},mid=(a.y+b.y)/2;
+        markup += `<g class="agent-tool-edge" aria-label="${esc(agent.name)}的工具：${esc(tool.name)}"><path d="M${a.x},${a.y} C${a.x},${mid} ${b.x},${mid} ${b.x},${b.y}"/><text x="${(a.x+b.x)/2}" y="${mid-8}">工具</text></g>`;
+      }
+    }
     if (connecting && pointer) { const n = flow().nodes.find(n => n.id === connecting.id); if (n) markup += `<path class="edge-path" style="stroke:#7268e3;stroke-dasharray:5 4" d="${curve(portPos(n,true,connecting.branch),pointer)}"/>`; }
     $('edges').innerHTML = markup;
   }
@@ -141,6 +149,17 @@
     if (n.type === 'agent' || n.type === 'llm') {
       const current=models.find(m=>m.id===c.modelId), unavailable=c.modelId && (!current || !current.enabled);
       content += `<label class="field"><span>调用模型 <small>统一模型库</small></span><select data-config="modelId" aria-label="调用模型"><option value="">${models.some(m=>m.enabled) ? '请选择模型' : '请先添加模型'}</option>${unavailable ? `<option selected disabled value="${esc(c.modelId)}">${esc(current?.name || '原模型已删除或不在本机')} · 不可用</option>` : ''}${models.filter(m=>m.enabled).map(m=>`<option value="${esc(m.id)}" ${m.id===c.modelId ? 'selected' : ''}>${esc(m.name)} · ${esc(m.model)}</option>`).join('')}</select></label><button class="model-manage-link" data-open-models>＋ 管理与接入模型</button>${modelLoadError ? '<p class="run-model-error">模型配置加载失败，请打开模型管理重试。</p>' : ''}` + field('用户输入','inputTemplate',c.inputTemplate ?? '{{input}}',true,'默认使用上游输出，也可以组合多个上游变量。',true) + field('系统提示词','prompt',c.prompt || '',true,'作为模型的系统提示词发送，支持引用变量。',true) + field('模拟输出模板','template',c.template || '',true,'仅本地模拟使用，{{input}} 为当前节点解析后的用户输入。',true);
+    }
+    if (n.type === 'agent') {
+      let selectedTools = [];
+      try { selectedTools = E.agentConfig({toolNodeIds:c.toolNodeIds}).ids; } catch { /* Show invalid draft below. */ }
+      const availableTools = flow().nodes.filter(t => t.type === 'knowledge' && t.config.sourceMode === 'library' || t.type === 'http' && (t.config.method || 'GET') === 'GET');
+      const missingTools = selectedTools.filter(id => !availableTools.some(t => t.id === id));
+      content += '<hr class="section-divider"><div class="section-label">自主工具调用</div><p class="field-description">选择本画布中的知识库或 GET 工具，智能体会按任务自行选择并多次调用。工具无需连接主路径；请给工具起清楚的名称。</p>';
+      content += availableTools.length ? '<div class="agent-tool-list">' + availableTools.map(t => `<label class="agent-tool-option"><input type="checkbox" data-agent-tool="${esc(t.id)}" ${selectedTools.includes(t.id) ? 'checked' : ''}><span><b>${esc(t.name)}</b><small>${t.type === 'knowledge' ? '知识库检索' : 'HTTP GET'}</small></span></label>`).join('') + '</div>' : '<p class="field-description">先从左侧添加知识库或 HTTP GET 节点，配置后即可在这里选择。</p>';
+      if (missingTools.length) content += '<p class="run-model-error">部分已选工具被删除或类型变更，运行前请清除失效选择。</p><button class="model-manage-link" id="clear-agent-tools">清除全部工具选择</button>';
+      content += field('最多工具轮数', 'maxToolRounds', c.maxToolRounds ?? '4', false, '1–10；每次运行最多调用 20 次工具，达到轮数后要求模型直接回答。模拟模式仅使用输出模板。');
+      content += '<p class="field-description">工具收到模型生成的 query 文本。工具中的 {{input}} 和 {{start.input}} 都指该 query，不能引用主流程的其他节点。HTTP 查询变量会编码，模型不能更改接口来源。</p>';
     }
     if (n.type === 'knowledge' || n.type === 'condition') content += field('用户输入','inputTemplate',c.inputTemplate ?? '{{input}}',true,'选择用于检索或判断的输入内容。',true);
     if (n.type === 'http') {
@@ -264,7 +283,16 @@
     input.value=JSON.stringify({type:'object',properties:{title:{type:'string',minLength:1},tags:{type:'array',items:{type:'string'}}},required:['title'],additionalProperties:false},null,2);
     input.dispatchEvent(new Event('input',{bubbles:true}));input.focus();
   });
+  $('inspector').addEventListener('click',e=>{
+    if(e.target.closest('#clear-agent-tools') && node()?.type==='agent'){snapshot();node().config.toolNodeIds='[]';renderInspector();persist();}
+  });
   $('inspector').addEventListener('change',e=>{
+    if(e.target.dataset.agentTool && node()?.type==='agent'){
+      const ids=E.agentConfig({toolNodeIds:node().config.toolNodeIds}).ids.filter(id=>id!==e.target.dataset.agentTool);
+      if(e.target.checked)ids.push(e.target.dataset.agentTool);
+      if(ids.length>8){e.target.checked=false;return toast('每个智能体最多选择 8 个工具');}
+      snapshot();node().config.toolNodeIds=JSON.stringify(ids);renderNodes();persist();
+    }
     if(e.target.dataset.insertVariable&&e.target.value){const target=$('inspector').querySelector(`[data-config="${e.target.dataset.insertVariable}"]`);if(target){target.setRangeText(e.target.value,target.selectionStart,target.selectionEnd,'end');target.dispatchEvent(new Event('input',{bubbles:true}));target.focus();}e.target.value='';}
     if(['modelId','credentialId','method','outputType','workflowId','resultType','sourceMode','knowledgeId'].includes(e.target.dataset.config)&&node()){const key=e.target.dataset.config; snapshot();node().config[key]=e.target.value;renderNodes();if(['method','outputType','workflowId','sourceMode'].includes(key))renderInspector();persist();}
     if(e.target.id==='run-kind'){cancelRun();lastRunInput=$('run-input').value;runKind=e.target.value;renderRun();}
@@ -311,7 +339,7 @@
   }
   $('run').onclick=()=>{if(runMode && running)return;runMode=true;renderInspector();};
   function appendRunLog(log,elapsedMs,live,label='') {
-    $('run-log')?.insertAdjacentHTML('beforeend',`<details class="log-entry run-node-detail ${label?'batch-child-log':''}"><summary class="log-title">${label?`<span class="batch-log-context">${esc(label)}</span>`:''}${esc(log.name)}<small>${(elapsedMs/1000).toFixed(2)}s · ${live?'执行完成':'模拟完成'}</small></summary><div class="run-io"><b>输入</b><pre>${esc(log.input)}</pre>${log.prompt?`<b>系统提示词</b><pre>${esc(log.prompt)}</pre>`:''}${log.request?`<b>HTTP 请求</b><pre>${esc(log.request)}</pre>`:''}${log.httpStatus?`<b>HTTP 状态</b><pre>${log.httpStatus} · ${esc(log.contentType)}</pre>`:''}<b>输出${log.outputType==='json'?' · JSON':''}</b><pre>${esc(log.output)}</pre>${log.sources?`<div class="knowledge-source-list"><b>检索来源 · ${esc(log.knowledgeName)}</b>${log.sources.length?log.sources.map((h,i)=>`<p>[${i+1}] ${esc(h.documentName)} · 片段 ${h.chunkIndex+1} · 相关分 ${Number(h.score).toFixed(3)}</p>`).join(''):'<p>未匹配到片段</p>'}</div>`:''}${log.decision?`<b>判断结果</b><pre>${esc(log.decision)}</pre>`:''}</div></details>`);
+    $('run-log')?.insertAdjacentHTML('beforeend',`<details class="log-entry run-node-detail ${label?'batch-child-log':''}"><summary class="log-title">${label?`<span class="batch-log-context">${esc(label)}</span>`:''}${esc(log.name)}<small>${(elapsedMs/1000).toFixed(2)}s · ${live?'执行完成':'模拟完成'}</small></summary><div class="run-io"><b>输入</b><pre>${esc(log.input)}</pre>${log.prompt?`<b>系统提示词</b><pre>${esc(log.prompt)}</pre>`:''}${log.request?`<b>HTTP 请求</b><pre>${esc(log.request)}</pre>`:''}${log.httpStatus?`<b>HTTP 状态</b><pre>${log.httpStatus} · ${esc(log.contentType)}</pre>`:''}<b>输出${log.outputType==='json'?' · JSON':''}</b><pre>${esc(log.output)}</pre>${log.sources?`<div class="knowledge-source-list"><b>检索来源 · ${esc(log.knowledgeName)}</b>${log.sources.length?log.sources.map((h,i)=>`<p>[${i+1}] ${esc(h.documentName)} · 片段 ${h.chunkIndex+1} · 相关分 ${Number(h.score).toFixed(3)}</p>`).join(''):'<p>未匹配到片段</p>'}</div>`:''}${log.agentSteps?.length?`<b>自主工具调用 · ${log.agentSteps.length} 次</b><pre>${esc(FlowHistory.formatAgentSteps(log.agentSteps))}</pre>`:''}${log.decision?`<b>判断结果</b><pre>${esc(log.decision)}</pre>`:''}</div></details>`);
   }
   async function execute(){
     if(running)return;
@@ -331,12 +359,13 @@
         invokeKnowledge(n,query,signal){return ModelManager.request('/api/knowledge/'+encodeURIComponent(n.config.knowledgeId)+'/search',{method:'POST',body:{query,topK:Number(n.config.topK || 3)},signal});},
         ...(live?{
           validateModel(n){const m=models.find(m=>m.id===n.config.modelId);if(!modelsLoaded||modelLoadError)throw Error('模型配置尚未加载，请打开模型管理重试');if(!m||!m.enabled)throw Error(`请为「${n.name}」选择一个已启用的模型`);},
+          invokeAgent(n,input,signal,context){return ModelManager.request('/api/agent',{method:'POST',body:{modelId:n.config.modelId,prompt:context.prompt,input,tools:context.tools,maxToolRounds:n.config.maxToolRounds},signal});},
           async invokeModel(n,input,signal,context){return (await ModelManager.request('/api/chat',{method:'POST',body:{modelId:n.config.modelId,prompt:context.prompt,input},signal})).output;},
           validateHttp(n){if(n.config.credentialId){if(!credentialsLoaded||credentialError)throw Error('工具凭据尚未加载，请打开工具凭据管理重试');const credential=credentials.find(c=>c.id===n.config.credentialId);if(!credential)throw Error(`请为「${n.name}」选择一个可用的工具凭据`);if(new URL(n.config.url.replace(/\{\{[\s\S]*?\}\}/g,'variable')).origin!==credential.origin)throw Error(`「${n.name}」请求来源与凭据绑定来源不一致，请重新选择凭据`);}},
           invokeHttp(n,request,signal){return ModelManager.request('/api/http',{method:'POST',body:request,signal});}
         }:{}),
         async onNodeStart(n,context){currentNode=currentRunNode=n;currentRunContext=context;nodeStarted=performance.now();document.querySelector(`.node[data-id="${CSS.escape(n.id)}"]`)?.classList.add('running');if(!live)await new Promise(resolve=>setTimeout(resolve,180));},
-        onNode(log){if(token!==runToken)return;const elapsedMs=Math.max(0,performance.now()-nodeStarted);runStore.append(recordId,{...log,status:'success',elapsedMs});currentRunNode=null;currentRunContext=null;const el=document.querySelector(`.node[data-id="${CSS.escape(log.id)}"]`);el?.classList.remove('running');el?.classList.add('success');appendRunLog(log,elapsedMs,live);},
+        onNode(log){if(token!==runToken)return;const elapsedMs=Math.max(0,performance.now()-nodeStarted);runStore.append(recordId,{...log,status:'success',elapsedMs});currentRunNode=null;currentRunContext=null;const el=document.querySelector(`.node[data-id="${CSS.escape(log.id)}"]`);el?.classList.remove('running');el?.classList.add('success');for(const step of log.agentSteps || [])if(step.status==='success')document.querySelector(`.node[data-id="${CSS.escape(step.toolNodeId)}"]`)?.classList.add('success');appendRunLog(log,elapsedMs,live);},
         async onIteration(event){
           if(token!==runToken)return;
           const {batchNodeId,workflowId,workflowName,index,total,path}=event,meta={batchNodeId,workflowId,workflowName,iterationIndex:index,iterationTotal:total,iterationPath:path};
@@ -355,12 +384,13 @@
         }
       });
       if(token!==runToken)return;
-      const executedIds=new Set(plan.logs.map(log=>log.id));runStore.finish(recordId,{status:'success',output:plan.output,skipped:executionFlow.nodes.filter(n=>!executedIds.has(n.id)).map(n=>n.name)});runRecord=null;
+      const executedIds=new Set(plan.logs.flatMap(log=>[log.id,...(log.agentSteps || []).filter(step=>step.status==='success').map(step=>step.toolNodeId)]));runStore.finish(recordId,{status:'success',output:plan.output,skipped:executionFlow.nodes.filter(n=>!executedIds.has(n.id)).map(n=>n.name)});runRecord=null;
       results.insertAdjacentHTML('beforeend',`<div class="run-summary">✓ ${live?'执行':'模拟'}完成 · ${plan.logs.length} 个主流程节点 · ${((performance.now()-started)/1000).toFixed(1)}s${plan.skipped?' · '+plan.skipped+' 个未执行':''}</div><hr class="section-divider"><div class="section-label">最终输出</div><div class="log-entry"><pre id="final-result">${esc(plan.output)}</pre></div><button class="button full" id="copy-result">${icon('copy')}复制结果</button>`);
     } catch(error) {
       if(token!==runToken)return;
       const preflight=!currentNode;
       if(error.nodeId)currentNode=executionFlow.nodes.find(n=>n.id===error.nodeId)||currentNode;
+      if(error.agentSteps){if(currentBatchChild)currentBatchChild.context={...currentBatchChild.context,agentSteps:error.agentSteps};else currentRunContext={...currentRunContext,agentSteps:error.agentSteps};}
       appendInterruptedNode(error.name==='AbortError'?'cancelled':'error',error.message);runStore.finish(recordId,{status:error.name==='AbortError'?'cancelled':'error',error:error.message,failedNodeId:currentNode?.id||''});runRecord=null;
       if(currentNode){const el=document.querySelector(`.node[data-id="${CSS.escape(currentNode.id)}"]`);el?.classList.remove('running');el?.classList.add('error');}
       $('run-log')?.insertAdjacentHTML('beforeend',`<div class="log-entry error"><div class="log-title">${preflight?'运行检查未通过':'运行中断'}</div><pre>${esc(error.name==='AbortError'?'运行已取消':error.message)}</pre></div>`);

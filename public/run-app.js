@@ -34,6 +34,7 @@
       const summary=document.createElement('summary');summary.textContent=(log.name||log.id||'节点')+' · '+(log.status==='error'?'失败':log.status==='cancelled'?'已取消':'完成')+(Number.isFinite(log.elapsedMs)?' · '+(log.elapsedMs/1000).toFixed(2)+' 秒':'');details.append(summary);
       if(log.batchNodeId){const info=document.createElement('p');info.textContent=(log.workflowName||'子流程')+' · 第 '+(log.iterationPath?.length?log.iterationPath.map(i=>i+1).join(' / '):Number(log.iterationIndex||0)+1)+' 项';details.append(info);}
       if(log.sources?.length)block(details,'检索来源',log.sources.map((s,i)=>`[${i+1}] ${s.documentName} · 片段 ${s.chunkIndex+1}\n${s.text}`).join('\n\n'));
+      if(log.agentSteps?.length)block(details,'自主工具调用',FlowHistory.formatAgentSteps(log.agentSteps));
       block(details,'输入',log.input);block(details,'提示词',log.prompt);block(details,'请求',log.request);block(details,'输出',log.output);block(details,'错误',log.error);$('app-logs').append(details);
     }
     if(result.omittedLogs){const note=document.createElement('p');note.className='runner-note';note.textContent=`有 ${result.omittedLogs} 条日志因容量限制省略。`;$('app-logs').append(note);}

@@ -7,7 +7,7 @@
     const response=await fetch(path,{...rest,headers:{Accept:'application/json',...(body===undefined?{}:{'Content-Type':'application/json'})},...(body===undefined?{}:{body:JSON.stringify(body)})});
     let data;
     try { data=await response.json(); } catch { throw Error('本地服务未返回有效响应，请重启服务后重试'); }
-    if(!response.ok)throw Error(data.error || `请求失败（${response.status}）`);
+    if(!response.ok){const error=Error(data.error || `请求失败（${response.status}）`);if(Array.isArray(data.agentSteps))error.agentSteps=data.agentSteps;throw error;}
     return data;
   }
   function init({onChange,onOpen}) {
